@@ -1,0 +1,45 @@
+Parsing dataset directory...
+Found 42 classes:
+  abraham_grampa_simpson - 913 files
+  agnes_skinner - 42 files
+  apu_nahasapeemapetilon - 623 files
+  barney_gumble - 106 files
+  bart_simpson - 1342 files
+  carl_carlson - 98 files
+  charles_montgomery_burns - 1193 files
+  chief_wiggum - 986 files
+  cletus_spuckler - 47 files
+  comic_book_guy - 469 files
+  disco_stu - 8 files
+  edna_krabappel - 457 files
+  fat_tony - 27 files
+  gil - 27 files
+  groundskeeper_willie - 121 files
+  homer_simpson - 2246 files
+  kent_brockman - 498 files
+  krusty_the_clown - 1206 files
+  lenny_leonard - 310 files
+  lionel_hutz - 3 files
+  lisa_simpson - 1354 files
+  maggie_simpson - 128 files
+  marge_simpson - 1291 files
+  martin_prince - 71 files
+  mayor_quimby - 246 files
+  milhouse_van_houten - 1079 files
+  miss_hoover - 17 files
+  moe_szyslak - 1452 files
+  ned_flanders - 1454 files
+  nelson_muntz - 358 files
+  otto_mann - 32 files
+  patty_bouvier - 72 files
+  principal_skinner - 1194 files
+  professor_john_frink - 65 files
+  rainier_wolfcastle - 45 files
+  ralph_wiggum - 89 files
+  selma_bouvier - 103 files
+  sideshow_bob - 877 files
+  sideshow_mel - 40 files
+  snake_jailbird - 55 files
+  troy_mcclure - 8 files
+  waylon_smithers - 181 files
+Map saved as ./simpson_map_all.json

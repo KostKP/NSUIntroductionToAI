@@ -1,0 +1,19 @@
+{
+    "Global" : {
+        "model_pth" : "./simpson_resnet50.pth",
+        "dataset_map": "./simpson_map_all.json",
+        "dataset_dir" : "./dataset/simpsons_dataset",
+        "file_extension": ".jpg",
+        "dataset_split_ratio" : 0.8
+    },
+    "Train": {
+        "epochs" : 20,
+        "batch_size" : 64,
+        "learning_rate" : 0.001,
+        "save_every_epoch" : true,
+        "dataset_map": "./simpson_map_trn.json"
+    },
+    "Test": {
+        "dataset_map": "./simpson_map_tst.json"
+    }
+}
