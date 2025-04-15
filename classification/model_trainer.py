@@ -142,6 +142,7 @@ def main():
                 epoch_pth = f"{model_pth}_{epoch+1:03d}"
                 torch.save(model.state_dict(), epoch_pth)
         
+        print(f"Model saved as {model_pth}")
         torch.save(model.state_dict(), model_pth)
         
         plot_loss(train_losses)
