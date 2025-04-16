@@ -1,0 +1,6 @@
+Test Results (E42):
+  IoU: 0.50266440
+  Dice Coefficient: 0.66464349
+  Pixel Accuracy: 0.97002691
+  Precision: 0.70267558
+  Recall: 0.63802039
