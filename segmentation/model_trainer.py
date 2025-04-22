@@ -8,7 +8,6 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from PIL import Image
-import numpy as np
 import pandas as pd
 import segmentation_models_pytorch as smp
 import matplotlib.pyplot as plt
@@ -16,46 +15,76 @@ import seaborn as sns
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+import cv2
+
 class RoadsDataset(Dataset):
     def __init__(self, metadata_df, dataset_dir, split, transform=None):
         self.metadata = metadata_df[metadata_df['split'] == split]
         self.dataset_dir = dataset_dir
         self.transform = transform
         self.classes = pd.read_csv(os.path.join(dataset_dir, 'label_class_dict.csv'))
+        self.split = split
 
     def __len__(self):
-        return len(self.metadata)
+        return len(self.metadata) * 9
+
+    def _get_tile(self, image, label, tile_idx):
+        i = tile_idx // 3
+        j = tile_idx % 3
+        x_start = i * 500
+        y_start = j * 500
+        image_tile = image[x_start:x_start+500, y_start:y_start+500, :]
+        label_tile = label[x_start:x_start+500, y_start:y_start+500]
+
+        image_tile = cv2.copyMakeBorder(image_tile, 6,6,6,6, cv2.BORDER_REFLECT)
+        label_tile = cv2.copyMakeBorder(label_tile.astype(np.float32), 6,6,6,6, cv2.BORDER_CONSTANT, value=0)
+        return image_tile, label_tile
 
     def __getitem__(self, idx):
-        img_path = os.path.join(self.dataset_dir, self.metadata.iloc[idx]['tiff_image_path'])
-        label_path = os.path.join(self.dataset_dir, self.metadata.iloc[idx]['tif_label_path'])
+        original_idx = idx // 9
+        tile_idx = idx % 9
+
+        img_path = os.path.join(self.dataset_dir, self.metadata.iloc[original_idx]['tiff_image_path'])
+        label_path = os.path.join(self.dataset_dir, self.metadata.iloc[original_idx]['tif_label_path'])
 
         image = np.array(Image.open(img_path).convert('RGB'))
         label_img = np.array(Image.open(label_path).convert('RGB'))
-
         label = np.all(label_img == [255, 255, 255], axis=-1).astype(np.float32)
 
+        image_tile, label_tile = self._get_tile(image, label, tile_idx)
+
         if self.transform:
-            transformed = self.transform(image=image, mask=label)
-            image = transformed['image']
-            label = transformed['mask']
+            transformed = self.transform(image=image_tile, mask=label_tile)
+            image_transformed = transformed['image']
+            label_transformed = transformed['mask']
+        else:
+            image_transformed = ToTensorV2()(image=image_tile, mask=label_tile)['image']
+            label_transformed = ToTensorV2()(image=image_tile, mask=label_tile)['mask']
 
-        return image, label.unsqueeze(0)  # (1, H, W)
+        if self.split == 'test':
+            i = tile_idx // 3
+            j = tile_idx % 3
+            return image_transformed, label_transformed.unsqueeze(0), original_idx, i, j
+        else:
+            return image_transformed, label_transformed.unsqueeze(0)
 
-base_transforms = [
-    A.Resize(512, 512),
-]
+mean = (0.485, 0.456, 0.406)
+std = (0.229, 0.224, 0.225)
 
-train_transform = A.Compose(base_transforms + [
+train_transform = A.Compose([
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
     A.RandomRotate90(p=0.5),
     A.RandomBrightnessContrast(p=0.2),
-    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+    A.Normalize(mean=mean, std=std)
 ] + [ToTensorV2()])
 
-transform = A.Compose(base_transforms + [
-    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
+val_transform = A.Compose([
+    A.Normalize(mean=mean, std=std)
+] + [ToTensorV2()])
+
+transform = A.Compose([
+    A.Normalize(mean=mean, std=std)
 ] + [ToTensorV2()])
 
 def build_model():
@@ -111,10 +140,10 @@ def main():
         print("Starting training...")
 
         train_dataset = RoadsDataset(metadata, global_config['dataset_dir'], 'train', train_transform)
-        val_dataset = RoadsDataset(metadata, global_config['dataset_dir'], 'val', transform)
+        val_dataset = RoadsDataset(metadata, global_config['dataset_dir'], 'val', val_transform)
 
-        train_loader = DataLoader(train_dataset, batch_size=train_config['batch_size'], shuffle=True, num_workers=4)
-        val_loader = DataLoader(val_dataset, batch_size=train_config['batch_size'], shuffle=False, num_workers=4)
+        train_loader = DataLoader(train_dataset, batch_size=3, shuffle=True, num_workers=8)
+        val_loader = DataLoader(val_dataset, batch_size=3, shuffle=False, num_workers=8)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=train_config['learning_rate'])
         criterion = nn.BCEWithLogitsLoss()
@@ -133,7 +162,12 @@ def main():
                 images, labels = images.to(device), labels.to(device)
                 optimizer.zero_grad()
                 outputs = model(images)
-                loss = criterion(outputs, labels)
+                
+                # Cut padding
+                outputs_cropped = outputs[:, :, 6:-6, 6:-6]
+                labels_cropped = labels[:, :, 6:-6, 6:-6]
+                
+                loss = criterion(outputs_cropped, labels_cropped)
                 loss.backward()
                 optimizer.step()
                 epoch_loss += loss.item() * images.size(0)
@@ -149,15 +183,19 @@ def main():
 
             with torch.no_grad():
                 for images, labels in val_loader:
-                    images = images.to(device)
-                    labels = labels.to(device)
+                    images, labels = images.to(device), labels.to(device)
                     outputs = model(images)
-                    loss = criterion(outputs, labels)
+                    
+                    # Cut padding
+                    outputs_cropped = outputs[:, :, 6:-6, 6:-6]
+                    labels_cropped = labels[:, :, 6:-6, 6:-6]
+                    
+                    loss = criterion(outputs_cropped, labels_cropped)
                     val_loss += loss.item() * images.size(0)
 
-                    preds = torch.sigmoid(outputs) > 0.5
-                    intersection = (preds & labels.bool()).sum()
-                    union = (preds | labels.bool()).sum()
+                    preds = torch.sigmoid(outputs_cropped) > 0.5
+                    intersection = (preds & labels_cropped.bool()).sum()
+                    union = (preds | labels_cropped.bool()).sum()
                     iou = (intersection + 1e-6) / (union + 1e-6)
                     val_iou += iou.item() * images.size(0)
 
@@ -182,108 +220,126 @@ def main():
     print("Starting testing...")
 
     test_dataset = RoadsDataset(metadata, global_config['dataset_dir'], 'test', transform)
-
-    test_loader = DataLoader(test_dataset, batch_size=train_config['batch_size'], shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=3, shuffle=False, num_workers=8)
     
     model.eval()
 
-    total_iou = 0.0
-    total_pixel_acc = 0.0
-    total_dice = 0.0
-    total_precision = 0.0
-    total_recall = 0.0
-    num_samples = 0
+    r_tile_data = {'map_image': [], 'true_mask': [], 'pred_mask': [], 'orig_idx': [], 'i': [], 'j': []}
+    output_data = {'map_image': [], 'true_mask': [], 'pred_mask': []}
+    metrics = {'iou': [], 'dice': [], 'pixel_acc': [], 'precision': [], 'recall': []}
 
     with torch.no_grad():
-        for images, labels in test_loader:
+        for images, labels, orig_indices, i_coords, j_coords in test_loader:
+            images_np = images.numpy()
             images = images.to(device)
-            labels = labels.to(device)
-
+            
             outputs = model(images)
-            preds = torch.sigmoid(outputs) > 0.5
-            preds = preds.bool()
-            labels_bool = labels.bool()
+            preds = (torch.sigmoid(outputs) > 0.5).squeeze(1).cpu().numpy().astype(np.uint8)
+            labels = labels.squeeze(1).cpu().numpy().astype(np.uint8)
 
-            intersection = (preds & labels_bool).sum(dim=(1, 2, 3)).float()
-            union = (preds | labels_bool).sum(dim=(1, 2, 3)).float()
-            iou = (intersection + 1e-6) / (union + 1e-6)
+            preds = preds[:, 6:-6, 6:-6]
+            labels = labels[:, 6:-6, 6:-6]
+            images_np = images_np[:, :, 6:-6, 6:-6]  # (B, C, H, W)
 
-            # Dice Coefficient
-            dice = (2 * intersection + 1e-6) / (preds.sum(dim=(1, 2, 3)) + labels_bool.sum(dim=(1, 2, 3)) + 1e-6)
+            for k in range(len(orig_indices)):
+                orig_idx = orig_indices[k].item()
+                i = i_coords[k].item()
+                j = j_coords[k].item()
 
-            # Pixel Accuracy
-            correct = (preds == labels_bool).sum(dim=(1, 2, 3)).float()
-            total = torch.tensor(labels_bool.shape[1] * labels_bool.shape[2] * labels_bool.shape[3]).float()
-            pixel_acc = correct / total
+                r_tile_data['map_image'].append(images_np[k].transpose(1, 2, 0))  # (H, W, C)
+                r_tile_data['true_mask'].append(labels[k])
+                r_tile_data['pred_mask'].append(preds[k])
+                r_tile_data['orig_idx'].append(orig_idx)
+                r_tile_data['i'].append(i)
+                r_tile_data['j'].append(j)
 
-            # Precision and Recall
-            tp = intersection
-            fp = (preds & ~labels_bool).sum(dim=(1, 2, 3)).float()
-            fn = (~preds & labels_bool).sum(dim=(1, 2, 3)).float()
+    tile_df = pd.DataFrame(r_tile_data)
+    
+    for orig_idx, group in tile_df.groupby('orig_idx'):
+        sorted_tiles = group.sort_values(by=['i', 'j'])
+        
+        pred_full = np.zeros((1500, 1500), dtype=np.uint8)
+        label_full = np.zeros((1500, 1500), dtype=np.uint8)
+        img_full = np.zeros((1500, 1500, 3), dtype=np.uint8)
+        
+        for _, row in sorted_tiles.iterrows():
+            i = row['i']
+            j = row['j']
+            x_start = i * 500
+            y_start = j * 500
+            
+            pred_tile = row['pred_mask']
+            label_tile = row['true_mask']
+            img_tile = (row['map_image'] * np.array(std) + np.array(mean)) * 255
+            img_tile = np.clip(img_tile, 0, 255).astype(np.uint8)
+            
+            pred_full[x_start:x_start+500, y_start:y_start+500] = pred_tile
+            label_full[x_start:x_start+500, y_start:y_start+500] = label_tile
+            img_full[x_start:x_start+500, y_start:y_start+500, :] = img_tile
 
-            precision = (tp + 1e-6) / (tp + fp + 1e-6)
-            recall = (tp + 1e-6) / (tp + fn + 1e-6)
+        output_data['map_image'].append(img_full)
+        output_data['true_mask'].append(label_full.astype(bool))
+        output_data['pred_mask'].append(pred_full.astype(bool))
 
-            batch_size = images.size(0)
-            num_samples += batch_size
-            total_iou += iou.sum().item()
-            total_dice += dice.sum().item()
-            total_pixel_acc += pixel_acc.sum().item()
-            total_precision += precision.sum().item()
-            total_recall += recall.sum().item()
-
-    test_iou = total_iou / num_samples
-    test_dice = total_dice / num_samples
-    test_pixel_acc = total_pixel_acc / num_samples
-    test_precision = total_precision / num_samples
-    test_recall = total_recall / num_samples
+        pred = pred_full.astype(bool)
+        true = label_full.astype(bool)
+        
+        intersection = np.logical_and(pred, true).sum()
+        union = np.logical_or(pred, true).sum()
+        iou = (intersection + 1e-6) / (union + 1e-6)
+        
+        dice = (2 * intersection + 1e-6) / (pred.sum() + true.sum() + 1e-6)
+        pixel_acc = np.equal(pred, true).sum() / pred.size
+        tp = intersection
+        fp = np.logical_and(pred, ~true).sum()
+        fn = np.logical_and(~pred, true).sum()
+        
+        precision = (tp + 1e-6) / (tp + fp + 1e-6)
+        recall = (tp + 1e-6) / (tp + fn + 1e-6)
+        
+        metrics['iou'].append(iou)
+        metrics['dice'].append(dice)
+        metrics['pixel_acc'].append(pixel_acc)
+        metrics['precision'].append(precision)
+        metrics['recall'].append(recall)
 
     print(f"Test Results:")
-    print(f"  IoU: {test_iou:.8f}")
-    print(f"  Dice Coefficient: {test_dice:.8f}")
-    print(f"  Pixel Accuracy: {test_pixel_acc:.8f}")
-    print(f"  Precision: {test_precision:.8f}")
-    print(f"  Recall: {test_recall:.8f}")
+    print(f"  IoU: {np.mean(metrics['iou']):.8f}")
+    print(f"  Dice Coefficient: {np.mean(metrics['dice']):.8f}")
+    print(f"  Pixel Accuracy: {np.mean(metrics['pixel_acc']):.8f}")
+    print(f"  Precision: {np.mean(metrics['precision']):.8f}")
+    print(f"  Recall: {np.mean(metrics['recall']):.8f}")
 
     # Example
 
-    indices = random.sample(range(len(test_dataset)), 3)
+    indices = random.sample(range(len(output_data['map_image'])), 3)
     
     fig, axes = plt.subplots(3, 4, figsize=(16, 12))
     plt.subplots_adjust(wspace=0.1, hspace=0.3)
     
-    mean = np.array([0.485, 0.456, 0.406])
-    std = np.array([0.229, 0.224, 0.225])
-    
     for row, idx in enumerate(indices):
-        image, true_mask = test_dataset[idx]
-        
-        with torch.no_grad():
-            pred = torch.sigmoid(model(image.unsqueeze(0).to(device)))
-            pred_mask = (pred.squeeze().cpu().numpy() > 0.5).astype(float)
-        
-        true_mask_np = true_mask.squeeze().numpy()
-        diff_mask = np.zeros((*true_mask_np.shape, 3), dtype=np.uint8) + 255
+        true_mask = output_data['true_mask'][idx]
+        pred_mask = output_data['pred_mask'][idx]
+
+        diff_mask = np.zeros((*true_mask.shape, 3), dtype=np.uint8) + 255
         
         # Green (True Positive)
-        tp_mask = (true_mask_np == 1) & (pred_mask == 1)
+        tp_mask = (true_mask == 1) & (pred_mask == 1)
         diff_mask[tp_mask] = [0, 255, 0]
         
         # Blue (False Negative)
-        fn_mask = (true_mask_np == 1) & (pred_mask == 0)
+        fn_mask = (true_mask == 1) & (pred_mask == 0)
         diff_mask[fn_mask] = [0, 0, 255]
         
         # Red (False Positive)
-        fp_mask = (true_mask_np == 0) & (pred_mask == 1)
+        fp_mask = (true_mask == 0) & (pred_mask == 1)
         diff_mask[fp_mask] = [255, 0, 0]
 
-        img = image.numpy().transpose(1, 2, 0)
-        img = (img * std + mean).clip(0, 1)
 
         titles = ['Original Image', 'True Mask', 'Prediction', 'Comparison Mask']
         data_to_show = [
-            img,
-            true_mask.squeeze().numpy(),
+            output_data['map_image'][idx],
+            true_mask,
             pred_mask,
             diff_mask
         ]
