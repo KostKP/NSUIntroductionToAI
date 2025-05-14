@@ -1,12 +1,12 @@
 {
     "Global" : {
         "model_pth" : "./mr_unet_resnet50.pth",
-        "dataset_dir" : "./dataset/Massachusetts Roads Dataset"
+        "dataset_dir" : "/mnt/f/Massachusetts Roads Dataset"
     },
     "Train": {
         "epochs" : 50,
         "learning_rate" : 0.0001,
         "save_every_epoch" : true,
-        "metadata" : "./custom_metadata.csv"
+        "metadata" : "/mnt/f/Massachusetts Roads Dataset/metadata.csv"
     }
 }
